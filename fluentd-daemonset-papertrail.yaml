@@ -27,26 +27,39 @@ spec:
         effect: NoSchedule
       - key: node-role.kubernetes.io/master
         effect: NoSchedule
+      imagePullSecrets:
+        - name: regcred
       containers:
       - name: fluentd
-        image: fluent/fluentd-kubernetes-daemonset:v1-debian-papertrail
+        image: registry.volt.build/fluentd-kubernetes:v1.16.1-debian-papertrail-amd64-1.2
         env:
           - name: K8S_NODE_NAME
             valueFrom:
               fieldRef:
                 fieldPath: spec.nodeName
           - name: FLUENT_PAPERTRAIL_HOST
-            value: "logsX.papertrailapp.com"
+            valueFrom:
+              secretKeyRef:
+                name: fluent-papertrail
+                key: host
           - name: FLUENT_PAPERTRAIL_PORT
-            value: "XXXXX"
+            valueFrom:
+              secretKeyRef:
+                name: fluent-papertrail
+                key: port
 #          - name: FLUENT_PAPERTRAIL_AUDIT_HOST
 #            value: "<PAPERTRAIL_AUDIT_HOST>"
 #          - name: FLUENT_PAPERTRAIL_AUDIT_PORT
 #            value: "<PAPERTRAIL_AUDIT_PORT>"
           - name: FLUENT_HOSTNAME
-            value: "MYCLUSTER"
+            valueFrom:
+              fieldRef:
+                fieldPath: spec.nodeName
+          - name: FLUENT_CONTAINER_TAIL_PARSER_TYPE
+            value: "cri"
         resources:
           limits:
+            cpu: 100m
             memory: 200Mi
           requests:
             cpu: 100m
@@ -62,6 +75,11 @@ spec:
         - name: dockercontainerlogdirectory
           mountPath: /var/log/pods
           readOnly: true
+        - name: config
+          mountPath: /fluentd/etc/conf.d
+        - name: containers
+          mountPath: /fluentd/etc/kubernetes/containers.conf
+          subPath: containers.conf
       terminationGracePeriodSeconds: 30
       volumes:
       - name: varlog
@@ -75,16 +93,134 @@ spec:
       - name: dockercontainerlogdirectory
         hostPath:
           path: /var/log/pods
-#---
-#apiVersion: v1
-#kind: ConfigMap
-#metadata:
-#  name: fluentd-config
-#  namespace: kube-system
-#  labels:
-#    k8s-app: fluentd-logging
-#    version: v1
-#data:
+      - name: config
+        configMap:
+          name: fluentd-config
+          items:
+          - key: containerd.conf
+            path: containerd.conf
+          - key: kubelet.conf
+            path: kubelet.conf
+          - key: calico-cni.conf
+            path: calico-cni.conf
+      - name: containers
+        configMap:
+          name: fluentd-config
+          items:
+          - key: containers.conf
+            path: containers.conf
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fluentd-config
+  namespace: kube-system
+  labels:
+    k8s-app: fluentd-logging
+    version: v1
+data:
+  kubelet.conf: |-
+    <filter kubelet>
+      @type systemd_entry
+      @id transform_kubelet_fields
+      field_map {"SYSLOG_IDENTIFIER": "program"}
+      field_map_strict false
+      fields_lowercase true
+      fields_strip_underscores true
+    </filter>
+
+    <filter kubelet>
+      @type record_transformer
+      @id transform_kubelet_syslog
+      enable_ruby
+      <record>
+        facility local0
+        severity ${{"I"=>"info","W"=>"warn","E"=>"err","F"=>"crit"}[record["message"][0]]}
+      </record>
+    </filter>
+  containerd.conf: |-
+    <source>
+      @type systemd
+      @id in_systemd_containerd
+      matches [{ "_SYSTEMD_UNIT": "containerd.service" }]
+      <storage>
+        @type local
+        persistent true
+        path /var/log/fluentd-journald-containerd-cursor.json
+      </storage>
+      read_from_head true
+      tag containerd
+    </source>
+
+    <filter containerd>
+      @type systemd_entry
+      @id transform_containerd_fields
+      field_map {"SYSLOG_IDENTIFIER": "program"}
+      field_map_strict false
+      fields_lowercase true
+      fields_strip_underscores true
+    </filter>
+
+    # possible severity levels
+    # " level=error "
+    # " level=info "
+    # " level=warning "
+    # " [INFO]["
+    # " [WARNING]["
+    # " [ERROR][" - assuming this one
+    <filter containerd>
+      @type record_transformer
+      @id transform_containerd_syslog
+      enable_ruby
+      <record>
+        facility local0
+        severity ${{"info"=>"info","warning"=>"warn","error"=>"err"}[record["message"].match?(/ level=[a-z]+ /) ? record["message"].match(/ level=([a-z]+) /)[1] : record["message"].match(/ \[([A-Z]+)\]\[/)[1].downcase]}
+      </record>
+    </filter>
+  calico-cni.conf: |-
+    <source>
+      @type tail
+      @id in_calico_cni
+      path /var/log/calico/cni/cni.log
+      pos_file /var/log/calico/cni/cni.log.pos
+      tag calico-cni
+      format /^(?<time>[0-9-]+ [0-9:.]+) \[(?<severity>[A-Z]+)\]\[(?<pid>[0-9]+)\] (?<message>.*)$/
+      time_format %F %T.%L
+    </source>
+
+    <filter calico-cni>
+      @type record_transformer
+      @id transform_calico_cni_syslog
+      enable_ruby
+      <record>
+        facility local0
+        hostname #{ENV['FLUENT_HOSTNAME']}
+        program calico-cni
+        severity ${{"info"=>"info","warning"=>"warn","error"=>"err"}[record["severity"].downcase]}
+      </record>
+    </filter>
+  containers.conf: |-
+    <source>
+      @type tail
+      @id in_tail_container_logs
+      path "#{ENV['FLUENT_CONTAINER_TAIL_PATH'] || '/var/log/containers/*.log'}"
+      pos_file "#{File.join('/var/log/', ENV.fetch('FLUENT_POS_EXTRA_DIR', ''), 'fluentd-containers.log.pos')}"
+      tag "#{ENV['FLUENT_CONTAINER_TAIL_TAG'] || 'kubernetes.*'}"
+      exclude_path "#{ENV['FLUENT_CONTAINER_TAIL_EXCLUDE_PATH'] || use_default}"
+      read_from_head true
+      @include ../tail_container_parse.conf
+    </source>
+
+    # the CRI parser creates a message property, not a log property,
+    # but the kubernetes.conf expects log and replaces message with
+    # log (which is empty) - this fixes that
+    <filter kubernetes.**>
+      @type record_transformer
+      @id transform_k8s_cri_fix
+      <record>
+        log ${record["message"]}
+      </record>
+    </filter>
 #  fluent.conf: |-
 #    @include kubernetes.conf
 #

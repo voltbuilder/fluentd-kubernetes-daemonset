@@ -10,7 +10,7 @@
 # It's still possible to build, tag and push images manually. Just use:
 #	make release-all
 
-IMAGE_NAME := fluent/fluentd-kubernetes
+IMAGE_NAME := registry.volt.build/fluentd-kubernetes
 X86_IMAGES := \
 	v1.16/debian-azureblob:v1.16.1-debian-azureblob-amd64-1.2,v1.16-debian-azureblob-amd64-1 \
 	v1.16/debian-elasticsearch8:v1.16.1-debian-elasticsearch8-amd64-1.2,v1.16-debian-elasticsearch8-amd64-1 \
