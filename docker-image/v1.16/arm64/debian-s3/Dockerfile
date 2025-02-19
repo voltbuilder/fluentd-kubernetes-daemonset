@@ -8,15 +8,15 @@ ENV QEMU_DOWNLOAD_SHA256 5db25cccb40ac7b1ca857653b883376b931d91b06ff34ffe70dcf61
 RUN apk add curl --no-cache
 RUN curl -sL -o qemu-6.0.0.balena1-aarch64.tar.gz https://github.com/balena-io/qemu/releases/download/v6.0.0%2Bbalena1/qemu-6.0.0.balena1-aarch64.tar.gz && echo "$QEMU_DOWNLOAD_SHA256 *qemu-6.0.0.balena1-aarch64.tar.gz" | sha256sum -c - | tar zxvf qemu-6.0.0.balena1-aarch64.tar.gz -C . && mv qemu-6.0.0+balena1-aarch64/qemu-aarch64-static .
 
-FROM fluent/fluentd:v1.16.1-debian-arm64-1.0
+FROM fluent/fluentd:v1.16.5-debian-arm64-1.0
 COPY --from=builder /go/qemu-aarch64-static /usr/bin/
 
 LABEL maintainer="Eduardo Silva <eduardo@treasure-data.com>"
 USER root
 WORKDIR /home/fluent
-ENV PATH /fluentd/vendor/bundle/ruby/3.1.0/bin:$PATH
-ENV GEM_PATH /fluentd/vendor/bundle/ruby/3.1.0
-ENV GEM_HOME /fluentd/vendor/bundle/ruby/3.1.0
+ENV PATH /fluentd/vendor/bundle/ruby/3.2.0/bin:$PATH
+ENV GEM_PATH /fluentd/vendor/bundle/ruby/3.2.0
+ENV GEM_HOME /fluentd/vendor/bundle/ruby/3.2.0
 # skip runtime bundler installation
 ENV FLUENTD_DISABLE_BUNDLER_INJECTION 1
 
@@ -28,7 +28,7 @@ RUN buildDeps="sudo make gcc g++ libc-dev libffi-dev curl" \
      && apt-get install \
      -y --no-install-recommends \
      $buildDeps $runtimeDeps net-tools \
-    && gem install bundler --version 2.2.24 \
+    && gem install bundler --version 2.4.17 \
     && bundle config silence_root_warning true \
     && bundle install --gemfile=/fluentd/Gemfile --path=/fluentd/vendor/bundle \
     && curl -sL -o columnify_0.1.0_Linux_x86_64.tar.gz https://github.com/reproio/columnify/releases/download/v0.1.0/columnify_0.1.0_Linux_x86_64.tar.gz \
@@ -39,6 +39,7 @@ RUN buildDeps="sudo make gcc g++ libc-dev libffi-dev curl" \
     apt-get purge -y --auto-remove \
                   -o APT::AutoRemove::RecommendsImportant=false \
                   $buildDeps \
+                  '*-dev' \
  && rm -rf /var/lib/apt/lists/* \
     && gem sources --clear-all \
     && rm -rf /tmp/* /var/tmp/* /usr/lib/ruby/gems/*/cache/*.gem
